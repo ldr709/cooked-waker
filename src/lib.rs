@@ -201,6 +201,26 @@ pub trait Wake: WakeRef + Sized {
     }
 }
 
+/// Like [`IntoWaker`], but it is unsafe to convert into a waker.
+///
+/// The automatic implementation does not require the type to be `'static`,
+/// making it unsafe to construct a [`Waker`] as the [`Waker`] may live longer
+/// than the type. However, this can be useful for unsafe code if you have some
+/// way of knowing that the [`Waker`] will not be used after its scope ends.
+/// There is no generic workaround to hide a non-`'static` type as a `'static`
+/// type, even using unsafe code, so the trait is necessary for this case.
+pub trait UnsafeIntoWaker {
+    /// The RawWakerVTable for this type. This should never be used directly;
+    /// it is entirely handled by `into_waker`. It is present as an associated
+    /// const because that's the only way for it to work in generic contexts.
+    #[doc(hidden)]
+    const VTABLE: &'static RawWakerVTable;
+
+    /// Convert this object into a `Waker`.
+    #[must_use]
+    unsafe fn unsafe_into_waker(self) -> Waker;
+}
+
 /// Objects that can be converted into an [`Waker`]. This trait is
 /// automatically implemented for types that fulfill the waker interface.
 /// Such types must be:
@@ -222,21 +242,15 @@ pub trait Wake: WakeRef + Sized {
 /// [`RawWakerVTable`]: core::task::RawWakerVTable
 /// [`Waker`]: core::task::Waker
 /// [`Clone`]: core::clone::Clone
-pub trait IntoWaker {
-    /// The RawWakerVTable for this type. This should never be used directly;
-    /// it is entirely handled by `into_waker`. It is present as an associated
-    /// const because that's the only way for it to work in generic contexts.
-    #[doc(hidden)]
-    const VTABLE: &'static RawWakerVTable;
-
+pub trait IntoWaker: UnsafeIntoWaker {
     /// Convert this object into a `Waker`.
     #[must_use]
     fn into_waker(self) -> Waker;
 }
 
-impl<T> IntoWaker for T
+impl<T> UnsafeIntoWaker for T
 where
-    T: Wake + Clone + Send + Sync + 'static + ViaRawPointer,
+    T: Wake + Clone + Send + Sync + ViaRawPointer,
     T::Target: Sized,
 {
     const VTABLE: &'static RawWakerVTable = &RawWakerVTable::new(
@@ -277,11 +291,21 @@ where
         },
     );
 
-    fn into_waker(self) -> Waker {
+    unsafe fn unsafe_into_waker(self) -> Waker {
         let raw = self.into_raw();
         let raw = raw as *const ();
         let raw_waker = RawWaker::new(raw, T::VTABLE);
-        unsafe { Waker::from_raw(raw_waker) }
+        Waker::from_raw(raw_waker)
+    }
+}
+
+impl<T> IntoWaker for T
+where
+    T: Wake + Clone + Send + Sync + 'static + ViaRawPointer,
+    T::Target: Sized,
+{
+    fn into_waker(self) -> Waker {
+        unsafe { self.unsafe_into_waker() }
     }
 }
 
